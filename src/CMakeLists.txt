@@ -9,6 +9,7 @@ add_library(symmetry
         bose_kmesh.cpp
         fermi_kmesh.cpp
         symmetry.cpp
+        integral_pair_map.cpp
 )
 
 find_package(Eigen3 REQUIRED)
