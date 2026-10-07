@@ -98,6 +98,7 @@ namespace green::integrals {
       auto kmesh=doubles(meta.id,"k_mesh_scaled",{_nk,3});
       if(kmesh!=doubles(original.id,"symmetry/k/mesh_scaled",{_nk,3})) throw std::runtime_error("THC/input k ordering differs");
       auto qmesh=doubles(meta.id,"q_mesh_scaled",{_nq,3});
+      _kmesh=kmesh;_qmesh=qmesh;
       for(size_t i=0;i<_nk;++i) for(size_t j=0;j<_nk;++j)
         for(size_t axis=0;axis<3;++axis) {
           double diff=kmesh[j*3+axis]-kmesh[i*3+axis]-qmesh[_map[i*_nk+j]*3+axis];
@@ -124,6 +125,8 @@ namespace green::integrals {
     size_t rank() const { return _r; }
     size_t naux() const { return _Q; }
     size_t nq() const { return _nq; }
+    const std::vector<double>& kmesh_scaled()const{return _kmesh;}
+    const std::vector<double>& qmesh_scaled()const{return _qmesh;}
     const std::string& set_kind() const { return _set; }
     size_t transfer(size_t i,size_t j) const { check_pair(i,j); return _map[i*_nk+j]; }
     const_matrix X(size_t k) const { if (k>=_nk) throw std::out_of_range("THC k point"); return const_matrix(_X.data()+k*_r*_n,_r,_n); }
@@ -263,6 +266,7 @@ namespace green::integrals {
     size_t _budget,_nk=0,_n=0,_r=0,_Q=0,_nq=0;
     bool _preload;
     std::vector<long> _map,_pairs,_conj,_trans;
+    std::vector<double> _kmesh,_qmesh;
     std::vector<complex> _X;
     mutable std::vector<complex> _M;
     std::vector<std::vector<complex>> _allM;

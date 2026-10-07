@@ -22,3 +22,11 @@ consumers; ordinary consumers request the full oriented canonical pair.
 Existing AO/auxiliary symmetry operations are not interpolation operations.
 The helper lives beside existing symmetry dependencies for common ownership,
 but it does not alter the existing symmetry implementation.
+
+The separate `green/tensors/thc_gw_fft.h` implements a full regular-mesh
+embedding, complex host FFT correlations, and hardware-neutral native GW
+algebra. Consumers provide CPU/CUDA matrix operations and own MPI scheduling.
+It is separate from the factor loader and does not reconstruct V. It requires
+the ndarray/Eigen/grids interfaces already present in MBPT and GPU consumers.
+The k mesh may be shifted; its integer coset embedding and actual Bloch values
+are retained. An explicit conservative all-q workspace check precedes allocation.
