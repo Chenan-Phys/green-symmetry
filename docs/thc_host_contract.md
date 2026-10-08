@@ -6,6 +6,8 @@ CPU and GPU consumers must use the coordinated THC feature commits.
 
 The opt-in flags are `interaction_representation=df|thc`, explicit
 `thc_mode=reconstruct|native`, and `thc_factor_memory_mb` (default 512).
+The registered `thc_cuda_aux_gemm3m` flag defaults to false and is consumed only
+by native GPU GW auxiliary contractions; it does not change loader behavior.
 The helper validates construction, accepted state, retained Q, complete schema,
 input dimensions/fingerprint, k order, q transfers, source maps, set identity,
 all factor shapes/dtypes/checksums/finite values, and correction sidecars.

@@ -30,6 +30,7 @@ namespace green::integrals {
     p.define<std::string>("interaction_representation", "Interaction storage representation: df or thc", "df");
     p.define<std::string>("thc_mode", "Explicit THC evaluation: reconstruct or native", "");
     p.define<size_t>("thc_factor_memory_mb", "Maximum host X plus cached/preloaded original-Q cores in MiB", 512);
+    p.define<bool>("thc_cuda_aux_gemm3m", "Opt into complex-double CUDA GEMM3M for native GPU GW auxiliary compression/expansion", false);
   }
 
   inline thc_reader_options thc_options(const params::params& p) {
