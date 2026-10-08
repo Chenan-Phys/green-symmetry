@@ -77,8 +77,8 @@ representation. These controls do not change the fitted factors or fit tolerance
   mesh values are preserved. Two-spin Sigma uses five FFT calls per tau instead
   of six. The complete Nt=110 example uses 880 rather than 990 calls, including
   the unchanged bubble stage. A one-point mesh needs no transforms.
-- `--thc_cpu_threads N` defaults to 1, allows 1..64, and bounds parallel Sigma
-  tau workers by the declared workspace. It applies to auxiliary/direct CPU GW
+- `--thc_cpu_threads N` defaults to 1, allows 1..64, and bounds parallel projection, bubble
+  and Sigma tau workers by the declared workspace. It applies to auxiliary/direct CPU GW
   with retained owned-q histories. Streaming falls back to one worker. Each worker
   writes disjoint tau slices; q accumulation order is preserved. Use one BLAS
   thread when testing these workers to avoid nested CPU oversubscription.
@@ -88,9 +88,31 @@ representation. These controls do not change the fitted factors or fit tolerance
   this option is incompatible with explicit orbital Sigma. Zero preserves the
   original per-spin point path. Benchmark the size for the intended dimensions.
 
-MBPT uses standard C++ threads scoped to the THC Sigma kernel. It does not
+MBPT uses standard C++ threads scoped to the THC GW kernel. It does not
 activate legacy OpenMP tensor loops. Worker code uses borrowed Eigen maps of
 buffers whose owners stay alive through every join; it avoids ndarray slice
 creation because GREEN v1.0.0 storage reference counting is non-atomic.
 Rebuild the coordinated
 symmetry, GPU and MBPT revisions together after changing resident APIs.
+
+Point-scaling follow-up:
+
+- `thc_cpu_threads` now also covers the projected-G cache and independent
+  half-tau bubble/compression work in retained auxiliary/direct execution.
+  Workers borrow raw buffers, preserve pair summation order, and write disjoint
+  tau/mirrored-tau rows. Scratch estimates use the larger bubble/Sigma worker
+  allowance; streaming still uses one worker. Keep BLAS at one thread when
+  using multiple workers.
+- `--thc_profile true` collects diagnostic component times. It defaults to
+  false. CPU instrumentation covers auxiliary/direct execution and requires
+  one tau worker; threaded BLAS is allowed. GPU reports CUDA-event intervals
+  grouped by GEMM transpose/shape/batch and convolution. Profiled measurements
+  must be kept separate from ordinary timing runs.
+- `--thc_cuda_prepacked_adjoint true` optionally packs immutable X/M adjoints
+  once per GPU GW solve/q tile, using ordinary complex-double GEMMs. It defaults
+  to false and consumes declared arena workspace. This is an experimental
+  layout choice, not a guaranteed speedup; early workstation timings are equal.
+- Point Sigma retains cubic basis work when point and auxiliary counts grow
+  linearly with basis size. Orbital Sigma reconstructs dense n^2-by-Q vertices:
+  its n^2 Q^2 and n^3 Q contractions are quartic when Q grows with n. Its cached
+  vertex construction is also quartic. It remains an exact finite-size tradeoff.

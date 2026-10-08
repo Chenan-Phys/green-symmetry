@@ -33,8 +33,10 @@ namespace green::integrals {
     p.define<bool>("thc_cuda_aux_gemm3m", "Opt into complex-double CUDA GEMM3M for native GPU GW auxiliary compression/expansion", false);
     p.define<std::string>("thc_gw_sigma", "Native GW Sigma route: point, orbital (direct/auxiliary), or cost-based auto", "point");
     p.define<bool>("thc_fft_reuse_screening", "Share Fourier-transformed screened interaction across spins", true);
-    p.define<size_t>("thc_cpu_threads", "Maximum native CPU auxiliary/direct Sigma tau workers; workspace bounded", 1);
+    p.define<size_t>("thc_cpu_threads", "Maximum native CPU auxiliary/direct projection, bubble and Sigma workers; workspace bounded", 1);
     p.define<size_t>("thc_cuda_sigma_batch", "Native point GPU Sigma tau/spin batch: 0 retains legacy spin loop, 1..32 batches", 0);
+    p.define<bool>("thc_cuda_prepacked_adjoint", "Prepack immutable native GPU GW X/M adjoints once per solve/tile", false);
+    p.define<bool>("thc_profile", "Collect native THC contraction timings; diagnostic runs, not benchmark timings", false);
   }
 
   inline thc_reader_options thc_options(const params::params& p) {
