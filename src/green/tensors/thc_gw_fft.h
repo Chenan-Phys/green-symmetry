@@ -26,10 +26,12 @@ namespace green::tensors {
     size_t _nk;
     mutable std::vector<thc_complex> _buffer;
     mutable thc_host_fft _host_fft;
+    mutable size_t _fft_calls=0;
     static double periodic(double x) {
       x-=std::floor(x);return std::abs(x-1)<1e-9 || std::abs(x)<1e-9?0:x;
     }
     void transform(std::vector<thc_matrix>& field,bool inverse)const {
+      if(_nk>1)++_fft_calls;
       if(thc_host_fft::enabled()){
         const size_t entries=field[0].size();_buffer.resize(_nk*entries);
         for(size_t k=0;k<_nk;++k)std::copy_n(field[k].data(),entries,_buffer.data()+k*entries);
@@ -62,6 +64,7 @@ namespace green::tensors {
     const std::vector<size_t>& k_map()const{return _kmap;}
     const std::vector<size_t>& q_map()const{return _qmap;}
     const std::vector<size_t>& negative_map()const{return _negative;}
+    size_t fft_calls()const{return _fft_calls;}
     static const char* cpu_backend(){return thc_host_fft::backend();}
     explicit thc_momentum_fft(const integrals::thc_factor_data& factors):
       thc_momentum_fft(factors.kmesh_scaled(),factors.qmesh_scaled(),factors.nk()) {}
@@ -100,9 +103,20 @@ namespace green::tensors {
     std::vector<thc_matrix> correlate(const std::vector<thc_matrix>& a,const std::vector<thc_matrix>& b,
                                       bool right_is_q,bool result_is_q)const {
       if(a.size()!=_nk || b.size()!=_nk)throw std::runtime_error("THC FFT field shape mismatch");
-      std::vector<thc_matrix> left(_nk),right(_nk),product(_nk),result(_nk);
-      for(size_t i=0;i<_nk;++i){left[_kmap[i]]=a[i];right[(right_is_q?_qmap:_kmap)[i]]=b[i];}
-      transform(left,false);transform(right,false);
+      return correlate_prepared(a,prepare_right(b,right_is_q),result_is_q);
+    }
+    std::vector<thc_matrix> prepare_right(const std::vector<thc_matrix>& b,bool right_is_q=true)const {
+      if(b.size()!=_nk)throw std::runtime_error("THC FFT prepared field shape mismatch");
+      std::vector<thc_matrix> right(_nk);
+      for(size_t i=0;i<_nk;++i)right[(right_is_q?_qmap:_kmap)[i]]=b[i];
+      transform(right,false);return right;
+    }
+    std::vector<thc_matrix> correlate_prepared(const std::vector<thc_matrix>& a,const std::vector<thc_matrix>& right,
+                                             bool result_is_q=false)const {
+      if(a.size()!=_nk || right.size()!=_nk)throw std::runtime_error("THC FFT prepared correlation shape mismatch");
+      std::vector<thc_matrix> left(_nk),product(_nk),result(_nk);
+      for(size_t i=0;i<_nk;++i)left[_kmap[i]]=a[i];
+      transform(left,false);
       for(size_t i=0;i<_nk;++i)product[i]=left[i].cwiseProduct(right[_negative[i]])/double(_nk);
       transform(product,true);
       for(size_t i=0;i<_nk;++i)result[i]=std::move(product[(result_is_q?_qmap:_kmap)[i]]);
@@ -165,7 +179,8 @@ namespace green::tensors {
    */
   template<class Transformer,class Ops>
   void thc_gw_fft_solve(const integrals::thc_factor_data& f,const Transformer& ft,
-                        const thc_tensor5& g,thc_tensor5& sigma,Ops& ops,size_t budget,const std::string& screening="auto") {
+                        const thc_tensor5& g,thc_tensor5& sigma,Ops& ops,size_t budget,const std::string& screening="auto",
+                        bool reuse_screening=true) {
     const size_t nt=g.shape()[0],ns=g.shape()[1],nk=f.nk(),n=f.nao(),r=f.rank(),nw=ft.sd().repn_bose().nw();
     const bool auxiliary=thc_auxiliary_screening(screening,r,f.naux());
     const size_t d=auxiliary?f.naux():r;
@@ -218,15 +233,18 @@ namespace green::tensors {
         if(auxiliary)wc[q]=ops.gemm(ops.gemm(cores[q],map(chi[q](t,0))),cores[q].adjoint());
         else wc[q]=map(chi[q](t,0));
       }
+      auto prepared=reuse_screening?mesh.prepare_right(wc):std::vector<thc_matrix>{};
+      if(reuse_screening)wc.clear(); // Prepared W replaces the untransformed slice.
       for(size_t s=0;s<ns;++s) {
         std::vector<thc_matrix> projected(nk);
         for(size_t k=0;k<nk;++k)projected[k]=ops.project(f.X(k),green(t,s,k));
-        auto point_sigma=mesh.correlate(projected,wc,true,false);
+        auto point_sigma=reuse_screening?mesh.correlate_prepared(projected,prepared):mesh.correlate(projected,wc,true,false);
         for(size_t k=0;k<nk;++k)
           Eigen::Map<thc_matrix>(sigma(t,s,k).data(),n,n)-=ops.backproject(f.X(k),point_sigma[k]);
       }
     }
-    std::cout<<"Native THC GW full-mesh "<<thc_momentum_fft::cpu_backend()<<"; actual shifted Bloch values retained"<<std::endl;
+    std::cout<<"Native THC GW full-mesh "<<thc_momentum_fft::cpu_backend()<<"; actual shifted Bloch values retained; FFT calls="<<mesh.fft_calls()
+      <<"; screening FFT shared="<<reuse_screening<<std::endl;
   }
 }
 #endif
