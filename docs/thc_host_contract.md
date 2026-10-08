@@ -25,8 +25,19 @@ but it does not alter the existing symmetry implementation.
 
 The separate `green/tensors/thc_gw_fft.h` implements a full regular-mesh
 embedding, complex host FFT correlations, and hardware-neutral native GW
-algebra. Consumers provide CPU/CUDA matrix operations and own MPI scheduling.
+algebra. Consumers own MPI scheduling; the GPU consumer uses the same mesh maps
+with a separate resident CUDA/cuFFT implementation.
 It is separate from the factor loader and does not reconstruct V. It requires
 the ndarray/Eigen/grids interfaces already present in MBPT and GPU consumers.
 The k mesh may be shifted; its integer coset embedding and actual Bloch values
 are retained. An explicit conservative all-q workspace check precedes allocation.
+
+CPU transforms use the opaque `thc_host_fft` backend with cached batched FFTW
+plans when headers/library are found. `GREEN_THC_USE_FFTW=OFF` forces Eigen
+fallback; FFTW is optional, and its headers stay out of public CUDA headers.
+Plan construction/destruction is serialized; each solver owns its executor.
+
+Screening supports point space or the exact original-Q identity
+`P=M^H chi M; (I-P) C=P; Wc=M C M^H`. Auto uses auxiliary space when Q < I.
+The loader and archive retain the same M, Q and validation contract; selecting
+the smaller solve introduces no approximation or additional truncation.
