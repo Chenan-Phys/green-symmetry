@@ -41,3 +41,12 @@ Screening supports point space or the exact original-Q identity
 `P=M^H chi M; (I-P) C=P; Wc=M C M^H`. Auto uses auxiliary space when Q < I.
 The loader and archive retain the same M, Q and validation contract; selecting
 the smaller solve introduces no approximation or additional truncation.
+
+Auxiliary GW stores Q-by-Q tau/frequency histories. The time-independent M
+commutes with the linear IR transforms, so compression precedes the forward
+transform and Wc expansion follows the inverse transform at the current tau.
+The summed-spin bubble is compressed only in the mirrored half of tau;
+Hermitian symmetrization commutes with M^H(.)M and the other half is copied.
+Current-tau Wc is shared across spins. Momentum FFT fields remain point-sized:
+q-dependent M cannot commute with that transform. Workspace estimates include
+the compact histories and the remaining point projection/momentum/Sigma fields.

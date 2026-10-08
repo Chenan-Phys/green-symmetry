@@ -114,23 +114,38 @@ namespace green::tensors {
     if(choice!="auto" && choice!="point" && choice!="auxiliary")throw std::runtime_error("thc_gw_screening must be auto, point or auxiliary");
     return choice=="auxiliary" || (choice=="auto" && auxiliary<rank);
   }
+  inline thc_matrix thc_dielectric_solve(const thc_matrix& P,const thc_matrix& rhs) {
+    thc_matrix A=thc_matrix::Identity(P.rows(),P.rows())-P;
+    thc_matrix solution=A.partialPivLu().solve(rhs);
+    double residual=(A*solution-rhs).norm()/std::max(1.,rhs.norm());
+    if(!solution.allFinite() || !std::isfinite(residual) || residual>1e-9)throw std::runtime_error("native THC screening residual failed");
+    return solution;
+  }
+  /** Auxiliary dielectric core; expansion to interpolation space is deferred. */
+  inline thc_matrix thc_screened_core(const thc_matrix& P) {
+    return thc_dielectric_solve(P,P);
+  }
   /** Exact low-rank identity for the same fitted interaction. Z is never inverted. */
   inline thc_matrix thc_screened_correlation(const thc_matrix& m,const thc_matrix& Z,
                                              const thc_matrix& response,bool auxiliary) {
     thc_matrix P,rhs;
     if(auxiliary){P=m.adjoint()*response*m;rhs=P;}
     else {P=Z*response;rhs=P*Z;}
-    thc_matrix A=thc_matrix::Identity(P.rows(),P.rows())-P;
-    thc_matrix solution=A.partialPivLu().solve(rhs);
-    double residual=(A*solution-rhs).norm()/std::max(1.,rhs.norm());
-    if(!solution.allFinite() || !std::isfinite(residual) || residual>1e-9)throw std::runtime_error("native THC screening residual failed");
+    thc_matrix solution=thc_dielectric_solve(P,rhs);
     if(auxiliary)return m*solution*m.adjoint();
     return solution;
   }
 
-  inline void check_thc_fft_workspace(const integrals::thc_factor_data& f,size_t nt,size_t nw,size_t budget) {
-    // All-q Wc(tau), one-q transform arrays, Fourier fields and solve scratch.
-    const double bytes=(double(f.nq())*nt+nt+nw+12.0*f.nk()+8)*f.rank()*f.rank()*16;
+  inline void check_thc_fft_workspace(const integrals::thc_factor_data& f,size_t nt,size_t nw,size_t budget,bool auxiliary=false) {
+    const double r=f.rank(),n=f.nao(),Q=f.naux(),d=auxiliary?Q:r;
+    // Histories and IR scratch use d=Q in auxiliary mode. Momentum fields
+    // remain r*r because the q-dependent M cannot pass through a momentum FFT.
+    // Include owned core copies, projection/backprojection and LU temporaries.
+    const double histories=double(f.nq())*nt*d*d;
+    const double transform=(nt+2.*nw+8)*d*d;
+    const double momentum=12.*f.nk()*r*r+2.*f.nk()*r*n+2.*f.nk()*n*n;
+    const double cores=(auxiliary?double(f.nq()):1.)*r*Q+4.*r*d;
+    const double bytes=(histories+transform+momentum+cores)*sizeof(thc_complex);
     if(bytes>double(budget))throw std::runtime_error("THC FFT all-q workspace exceeds declared budget; use direct sums or increase budget");
   }
   struct thc_cpu_matrix_ops {
@@ -141,6 +156,7 @@ namespace green::tensors {
     thc_matrix screen(const thc_matrix& m,const thc_matrix& z,const thc_matrix& response,bool auxiliary){
       return thc_screened_correlation(m,z,response,auxiliary);
     }
+    thc_matrix screen_core(const thc_matrix& response){return thc_screened_core(response);}
   };
 
   /** Hardware-neutral point-space GW algebra. Consumers own MPI scheduling;
@@ -151,12 +167,18 @@ namespace green::tensors {
   void thc_gw_fft_solve(const integrals::thc_factor_data& f,const Transformer& ft,
                         const thc_tensor5& g,thc_tensor5& sigma,Ops& ops,size_t budget,const std::string& screening="auto") {
     const size_t nt=g.shape()[0],ns=g.shape()[1],nk=f.nk(),n=f.nao(),r=f.rank(),nw=ft.sd().repn_bose().nw();
-    thc_momentum_fft mesh(f);check_thc_fft_workspace(f,nt,nw,budget);
+    const bool auxiliary=thc_auxiliary_screening(screening,r,f.naux());
+    const size_t d=auxiliary?f.naux():r;
+    thc_momentum_fft mesh(f);check_thc_fft_workspace(f,nt,nw,budget,auxiliary);
+    std::vector<thc_matrix> cores;
+    if(auxiliary){cores.reserve(f.nq());for(size_t q=0;q<f.nq();++q)cores.emplace_back(f.M(q));}
     std::vector<thc_tensor4> chi;
-    for(size_t q=0;q<f.nq();++q){chi.emplace_back(nt,1,r,r);chi.back().set_zero();}
-    auto map=[&](auto&& a){return Eigen::Map<thc_matrix>(a.data(),r,r);};
+    for(size_t q=0;q<f.nq();++q){chi.emplace_back(nt,1,d,d);chi.back().set_zero();}
+    auto map=[&](auto&& a){return Eigen::Map<thc_matrix>(a.data(),d,d);};
     auto green=[&](size_t t,size_t s,size_t k){return Eigen::Map<const thc_matrix>(g(t,s,k).data(),n,n);};
     for(size_t t=0;t<nt/2;++t) {
+      std::vector<thc_matrix> accumulated;
+      if(auxiliary)for(size_t q=0;q<f.nq();++q)accumulated.emplace_back(thc_matrix::Zero(r,r));
       for(size_t s=0;s<ns;++s) {
         std::vector<thc_matrix> left(nk),right(nk);
         for(size_t k=0;k<nk;++k) {
@@ -164,33 +186,45 @@ namespace green::tensors {
           right[k]=ops.project(f.X(k),green(t,s,k));
         }
         auto bubble=mesh.correlate(left,right,false,true);
-        for(size_t q=0;q<f.nq();++q)map(chi[q](t,0))-=(ns==2?1.0:2.0)*bubble[q];
+        for(size_t q=0;q<f.nq();++q) {
+          if(auxiliary)accumulated[q]-=(ns==2?1.0:2.0)*bubble[q];
+          else map(chi[q](t,0))-=(ns==2?1.0:2.0)*bubble[q];
+        }
       }
       for(size_t q=0;q<f.nq();++q) {
+        // Compression commutes with Hermitian/time symmetrization. Sum spins
+        // first so each q is compressed only nt/2 times, independent of ns.
+        if(auxiliary)map(chi[q](t,0))=ops.gemm(ops.gemm(cores[q].adjoint(),accumulated[q]),cores[q]);
         thc_matrix bubble=map(chi[q](t,0));
         map(chi[q](t,0))=0.5*(bubble+bubble.adjoint()).eval();
         map(chi[q](nt-t-1,0))=map(chi[q](t,0));
       }
     }
-    thc_tensor4 wc_w(nw,1,r,r);
+    thc_tensor4 wc_w(nw,1,d,d);
     for(size_t q=0;q<f.nq();++q) {
-      thc_matrix m=f.M(q);
-      bool auxiliary=thc_auxiliary_screening(screening,r,m.cols());
-      thc_matrix Z;
-      if(!auxiliary)Z=ops.gemm(m,m.adjoint());
+      thc_matrix m,Z;
+      if(!auxiliary){m=f.M(q);Z=ops.gemm(m,m.adjoint());}
       ft.tau_f_to_w_b(chi[q],wc_w,0,nw,true);
       for(size_t w=0;w<nw;++w) {
-        map(wc_w(w,0))=ops.screen(m,Z,map(wc_w(w,0)),auxiliary);
+        if(auxiliary)map(wc_w(w,0))=ops.screen_core(map(wc_w(w,0)));
+        else map(wc_w(w,0))=ops.screen(m,Z,map(wc_w(w,0)),false);
       }
       ft.w_b_to_tau_f(wc_w,chi[q],0,nt,true);
     }
-    for(size_t t=0;t<nt;++t)for(size_t s=0;s<ns;++s) {
-      std::vector<thc_matrix> projected(nk),wc(f.nq());
-      for(size_t k=0;k<nk;++k)projected[k]=ops.project(f.X(k),green(t,s,k));
-      for(size_t q=0;q<f.nq();++q)wc[q]=map(chi[q](t,0));
-      auto point_sigma=mesh.correlate(projected,wc,true,false);
-      for(size_t k=0;k<nk;++k)
-        Eigen::Map<thc_matrix>(sigma(t,s,k).data(),n,n)-=ops.backproject(f.X(k),point_sigma[k]);
+    for(size_t t=0;t<nt;++t) {
+      std::vector<thc_matrix> wc(f.nq());
+      // Keep C(q,tau) in Q space; expand just the point-space momentum slice.
+      for(size_t q=0;q<f.nq();++q) {
+        if(auxiliary)wc[q]=ops.gemm(ops.gemm(cores[q],map(chi[q](t,0))),cores[q].adjoint());
+        else wc[q]=map(chi[q](t,0));
+      }
+      for(size_t s=0;s<ns;++s) {
+        std::vector<thc_matrix> projected(nk);
+        for(size_t k=0;k<nk;++k)projected[k]=ops.project(f.X(k),green(t,s,k));
+        auto point_sigma=mesh.correlate(projected,wc,true,false);
+        for(size_t k=0;k<nk;++k)
+          Eigen::Map<thc_matrix>(sigma(t,s,k).data(),n,n)-=ops.backproject(f.X(k),point_sigma[k]);
+      }
     }
     std::cout<<"Native THC GW full-mesh "<<thc_momentum_fft::cpu_backend()<<"; actual shifted Bloch values retained"<<std::endl;
   }
